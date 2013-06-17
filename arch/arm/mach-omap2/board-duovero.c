@@ -33,40 +33,45 @@
 #include <linux/regulator/machine.h>
 #include <linux/regulator/fixed.h>
 #include <linux/usb/otg.h>
+#include <linux/usb/musb.h>
+#include <linux/usb/phy.h>
+#include <linux/irqchip/arm-gic.h>
 
-#include <mach/hardware.h>
-#include <asm/hardware/gic.h>
+#include <linux/platform_data/spi-omap2-mcspi.h>
+
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 #include <video/omapdss.h>
 
-#include <plat/board.h>
-#include <plat/usb.h>
-#include <plat/mmc.h>
-
 #include "common.h"
+#include "soc.h"
 #include "control.h"
+#include "mmc.h"
 #include "hsmmc.h"
 #include "mux.h"
+#include "gpmc.h"
 #include "common-board-devices.h"
+#include "board-flash.h"
 
-#define HDMI_GPIO_LS_OE		41
-#define HDMI_GPIO_HPD		63
+#define HDMI_GPIO_CT_CP_HPD 60 /* HPD mode enable/disable */
+#define HDMI_GPIO_LS_OE 41 /* Level shifter for HDMI */
+#define HDMI_GPIO_HPD  63 /* Hotplug detect */
 
 /* smsc911x ethernet */
 #if defined(CONFIG_SMSC911X) || defined(CONFIG_SMSC911X_MODULE)
 
 #include <linux/smsc911x.h>
-#include <plat/gpmc-smsc911x.h>
+#include "gpmc-smsc911x.h"
 
-#define SMSC911X_CS      5
-#define SMSC911X_GPIO    44
+
+#define DUOVERO_SMSC911X_CS      5
+#define DUOVERO_SMSC911X_GPIO    44
 
 static struct omap_smsc911x_platform_data smsc911x_cfg = {
 	.id		= 0,
-	.cs             = SMSC911X_CS,
-	.gpio_irq       = SMSC911X_GPIO,
+	.cs             = DUOVERO_SMSC911X_CS,
+	.gpio_irq       = DUOVERO_SMSC911X_GPIO,
 	.gpio_reset     = -EINVAL,
 	.flags		= SMSC911X_USE_32BIT,
 };
@@ -94,7 +99,7 @@ static struct gpio duovero_usbhs_gpios[] __initdata = {
 	{ GPIO_EHCI_NRESET,	GPIOF_OUT_INIT_LOW,  "ehci_nreset" },
 };
 
-static const struct usbhs_omap_board_data usbhs_bdata __initconst = {
+static struct usbhs_omap_platform_data usbhs_bdata __initconst = {
 	.port_mode[0] = OMAP_EHCI_PORT_MODE_PHY,
 	.port_mode[1] = OMAP_USBHS_PORT_MODE_UNUSED,
 	.port_mode[2] = OMAP_USBHS_PORT_MODE_UNUSED,
@@ -121,7 +126,7 @@ static void __init duovero_usbhs_init(void)
 		return;
 	}
 
-	ret = clk_enable(phy_ref_clk);
+	ret = clk_prepare_enable(phy_ref_clk);
 	if (ret < 0) {
 		pr_err("Cannot enable auxclk3\n");
 		return;
@@ -220,8 +225,16 @@ static struct twl6040_codec_data twl6040_codec = {
 
 static struct twl6040_platform_data twl6040_data = {
 	.codec		= &twl6040_codec,
-	.audpwron_gpio	= 160,
-	.irq_base	= TWL6040_CODEC_IRQ_BASE,
+//	.audpwron_gpio	= 160,
+	.audpwron_gpio	= 127
+};
+
+static struct i2c_board_info __initdata duovero_i2c_1_boardinfo[] = {
+	{
+		I2C_BOARD_INFO("twl6040", 0x4b),
+		.irq = 119 + OMAP44XX_IRQ_GIC_START,
+		.platform_data = &twl6040_data,
+	},
 };
 
 /* duovero uses the common PMIC configuration */
@@ -241,37 +254,46 @@ static int __init duovero_i2c_init(void)
 			TWL_COMMON_REGULATOR_CLK32KG |
 			TWL_COMMON_REGULATOR_V1V8 |
 			TWL_COMMON_REGULATOR_V2V1);
-	omap4_pmic_init("twl6030", &duovero_twldata,
-			&twl6040_data, OMAP44XX_IRQ_SYS_2N);
+//	omap4_pmic_init("twl6030", &duovero_twldata,
+//			&twl6040_data, OMAP44XX_IRQ_SYS_2N);
+        omap4_pmic_init("twl6030", &duovero_twldata, duovero_i2c_1_boardinfo,
+                        ARRAY_SIZE(duovero_i2c_1_boardinfo));
 	omap_register_i2c_bus(2, 400, NULL, 0);
 	omap_register_i2c_bus(3, 400, NULL, 0);
 	omap_register_i2c_bus(4, 400, NULL, 0);
 	return 0;
 }
 
-static struct gpio duovero_hdmi_gpios[] = {
-	{ HDMI_GPIO_LS_OE, GPIOF_OUT_INIT_HIGH, "hdmi_gpio_ls_oe" },
-	{ HDMI_GPIO_HPD, GPIOF_DIR_IN, "hdmi_gpio_hpd" },
+#ifdef CONFIG_OMAP_MUX
+static struct omap_board_mux board_mux[] __initdata = {
+	/* WLAN IRQ - GPIO 53 */
+	OMAP4_MUX(GPMC_NCS3, OMAP_MUX_MODE3 | OMAP_PIN_INPUT),
+	/* WLAN POWER ENABLE - GPIO 43 */
+	OMAP4_MUX(GPMC_A19, OMAP_MUX_MODE3 | OMAP_PIN_OUTPUT),
+	/* WLAN SDIO: MMC5 CMD */
+	OMAP4_MUX(SDMMC5_CMD, OMAP_MUX_MODE0 | OMAP_PIN_INPUT_PULLUP),
+	/* WLAN SDIO: MMC5 CLK */
+	OMAP4_MUX(SDMMC5_CLK, OMAP_MUX_MODE0 | OMAP_PIN_INPUT_PULLUP),
+	/* WLAN SDIO: MMC5 DAT[0-3] */
+	OMAP4_MUX(SDMMC5_DAT0, OMAP_MUX_MODE0 | OMAP_PIN_INPUT_PULLUP),
+	OMAP4_MUX(SDMMC5_DAT1, OMAP_MUX_MODE0 | OMAP_PIN_INPUT_PULLUP),
+	OMAP4_MUX(SDMMC5_DAT2, OMAP_MUX_MODE0 | OMAP_PIN_INPUT_PULLUP),
+	OMAP4_MUX(SDMMC5_DAT3, OMAP_MUX_MODE0 | OMAP_PIN_INPUT_PULLUP),
+	/* User GPIOs */
+	OMAP4_MUX(ABE_DMIC_DIN2, OMAP_MUX_MODE3 | OMAP_PIN_OUTPUT),
+	OMAP4_MUX(ABE_DMIC_DIN3, OMAP_MUX_MODE3 | OMAP_PIN_OUTPUT),
+	/* NIRQ2 for twl6040 */
+	OMAP4_MUX(SYS_NIRQ2, OMAP_MUX_MODE0 |
+		OMAP_PIN_INPUT_PULLUP | OMAP_PIN_OFF_WAKEUPENABLE),
+	{ .reg_offset = OMAP_MUX_TERMINATOR },
 };
-
-static int duovero_panel_enable_hdmi(struct omap_dss_device *dssdev)
-{
-	int status;
-
-	status = gpio_request_array(duovero_hdmi_gpios,
-				    ARRAY_SIZE(duovero_hdmi_gpios));
-	if (status)
-		pr_err("Cannot request HDMI GPIOs\n");
-
-	return status;
-}
-
-static void duovero_panel_disable_hdmi(struct omap_dss_device *dssdev)
-{
-	gpio_free_array(duovero_hdmi_gpios, ARRAY_SIZE(duovero_hdmi_gpios));
-}
+#else
+#define board_mux	NULL
+#endif
 
 static struct omap_dss_hdmi_data duovero_hdmi_data = {
+	.ct_cp_hpd_gpio = HDMI_GPIO_CT_CP_HPD,
+	.ls_oe_gpio = HDMI_GPIO_LS_OE,
 	.hpd_gpio = HDMI_GPIO_HPD,
 };
 
@@ -279,8 +301,6 @@ static struct omap_dss_device  duovero_hdmi_device = {
 	.name = "hdmi",
 	.driver_name = "hdmi_panel",
 	.type = OMAP_DISPLAY_TYPE_HDMI,
-	.platform_enable = duovero_panel_enable_hdmi,
-	.platform_disable = duovero_panel_disable_hdmi,
 	.channel = OMAP_DSS_CHANNEL_DIGIT,
 	.data = &duovero_hdmi_data,
 };
@@ -299,6 +319,10 @@ void duovero_display_init(void)
 {
 	omap_display_init(&duovero_dss_data);
 	omap_hdmi_init(OMAP_HDMI_SDA_SCL_EXTERNAL_PULLUP);
+
+	omap_mux_init_gpio(HDMI_GPIO_LS_OE, OMAP_PIN_OUTPUT);
+	omap_mux_init_gpio(HDMI_GPIO_CT_CP_HPD, OMAP_PIN_OUTPUT);
+	omap_mux_init_gpio(HDMI_GPIO_HPD, OMAP_PIN_INPUT_PULLDOWN);
 }
 
 static struct omap_abe_twl6040_data duovero_abe_audio_data = {
@@ -309,7 +333,6 @@ static struct omap_abe_twl6040_data duovero_abe_audio_data = {
 	.has_afm	= ABE_TWL6040_LEFT | ABE_TWL6040_RIGHT,
 	.jack_detection	= 0,
 	.mclk_freq	= 38400000,
-
 };
 
 static struct platform_device duovero_abe_audio = {
@@ -335,13 +358,14 @@ static void __init duovero_init(void)
 {
 	int package = OMAP_PACKAGE_CBS;
 
-	omap4_mux_init(NULL, NULL, package);
+	omap4_mux_init(board_mux, NULL, package);
 	duovero_i2c_init();
 	platform_add_devices(duovero_devices, ARRAY_SIZE(duovero_devices));
 	omap_serial_init();
 	omap_sdrc_init(NULL, NULL);
 	omap4_twl6030_hsmmc_init(mmc);
 	duovero_usbhs_init();
+	usb_bind_phy("musb-hdrc.0.auto", 0, "omap-usb2.1.auto");
 	duovero_musb_init();
 	duovero_display_init();
 	duovero_init_smsc911x();
@@ -349,13 +373,13 @@ static void __init duovero_init(void)
 
 MACHINE_START(DUOVERO, "OMAP4 duovero board")
 	.atag_offset	= 0x100,
+	.smp		= smp_ops(omap4_smp_ops),
 	.reserve	= omap_reserve,
 	.map_io		= omap4_map_io,
 	.init_early	= omap4430_init_early,
 	.init_irq	= gic_init_irq,
-	.handle_irq	= gic_handle_irq,
 	.init_machine	= duovero_init,
 	.init_late	= omap4430_init_late,
-	.timer		= &omap4_timer,
-	.restart	= omap_prcm_restart,
+	.init_time	= omap4_local_timer_init,
+	.restart	= omap44xx_restart,
 MACHINE_END
